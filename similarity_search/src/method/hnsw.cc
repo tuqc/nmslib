@@ -449,7 +449,6 @@ namespace similarity {
         LOG(LIB_INFO) << "algoType           =" << searchAlgoType_;
     }
 
-    print 'total_batch: ', total_batch
     template <typename dist_t>
     const std::string
     Hnsw<dist_t>::StrDesc() const
