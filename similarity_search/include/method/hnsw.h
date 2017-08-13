@@ -382,7 +382,6 @@ namespace similarity {
         int maxsize;
         int level;
 
-    private:
         const Object *data_;
     };
 
@@ -493,6 +492,9 @@ namespace similarity {
 
         void add(const Space<dist_t> *space, HnswNode *newElement);
         void addToElementListSynchronized(HnswNode *newElement);
+        void addElement(const Object *newObj);
+        void reOptimizeIndex();
+        size_t elementSize();
 
         void link(HnswNode *first, HnswNode *second, int level, const Space<dist_t> *space, int delaunay_type)
         {

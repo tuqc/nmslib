@@ -359,12 +359,13 @@ namespace similarity {
         offsetData_ = 0;
 
         memset(data_level0_memory_, 1, memoryPerObject_ * ElList_.size());
-        LOG(LIB_INFO) << "Making optimized index";
+        LOG(LIB_INFO) << "CQ Making optimized index";
         data_rearranged_.resize(ElList_.size());
-        for (long i = 0; i < ElList_.size(); i++) {
+        for (size_t i = 0; i < ElList_.size(); i++) {
             ElList_[i]->copyDataAndLevel0LinksToOptIndex(
                 data_level0_memory_ + (size_t)i * memoryPerObject_, offsetLevel0_, offsetData_);
             data_rearranged_[i] = new Object(data_level0_memory_ + (i)*memoryPerObject_ + offsetData_);
+            ElList_[i]->data_ = data_rearranged_[i];
         };
         ////////////////////////////////////////////////////////////////////////
         //
@@ -376,13 +377,13 @@ namespace similarity {
             for (long i = 0; i < ElList_.size(); i++) {
                 float *v = (float *)(data_level0_memory_ + (size_t)i * memoryPerObject_ + offsetData_ + 16);
                 float sum = 0;
-                for (int i = 0; i < vectorlength_; i++) {
-                    sum += v[i] * v[i];
+                for (int j = 0; j < vectorlength_; j++) {
+                    sum += v[j] * v[j];
                 }
                 if (sum != 0.0) {
                     sum = 1 / sqrt(sum);
-                    for (int i = 0; i < vectorlength_; i++) {
-                        v[i] *= sum;
+                    for (int j = 0; j < vectorlength_; j++) {
+                        v[j] *= sum;
                     }
                 }
             };
@@ -403,6 +404,7 @@ namespace similarity {
             linkLists_[i] = linkList;
             ElList_[i]->copyHigherLevelLinksToOptIndex(linkList, 0);
         };
+        totalElementsStored_ = ElList_.size();
         enterpointId_ = enterpoint_->getId();
         LOG(LIB_INFO) << "Finished making optimized index";
         LOG(LIB_INFO) << "Maximum level = " << enterpoint_->level;
@@ -422,6 +424,7 @@ namespace similarity {
         // ef and efSearch are going to be parameter-synonyms with the default value 20
         pmgr.GetParamOptional("ef", ef_, 20);
         pmgr.GetParamOptional("efSearch", ef_, ef_);
+	pmgr.GetParamOptional("efConstruction", efConstruction_, ef_);
 
         int tmp;
         pmgr.GetParamOptional(
@@ -446,6 +449,7 @@ namespace similarity {
         LOG(LIB_INFO) << "algoType           =" << searchAlgoType_;
     }
 
+    print 'total_batch: ', total_batch
     template <typename dist_t>
     const std::string
     Hnsw<dist_t>::StrDesc() const
@@ -653,6 +657,98 @@ namespace similarity {
         unique_lock<mutex> lock(ElListGuard_);
         ElList_.push_back(HierElement);
     }
+
+    template <typename dist_t>
+    size_t Hnsw<dist_t>::elementSize() 
+    {
+        return ElList_.size();
+    }
+
+    template <typename dist_t>
+    void
+    Hnsw<dist_t>::addElement(const Object *newObj)
+    {
+        unique_lock<mutex> lock(ElListGuard_);
+        HnswNode *node = new HnswNode(newObj, ElList_.size());
+        ElList_.push_back(node);
+    }
+ 
+    template <typename dist_t>
+    void Hnsw<dist_t>::reOptimizeIndex() 
+    {
+        unique_lock<mutex> lock(ElListGuard_);
+        if (visitedlistpool) delete visitedlistpool;
+        visitedlistpool = new VisitedListPool(indexThreadQty_, ElList_.size());
+ 
+        LOG(LIB_INFO) << "Original points:" << totalElementsStored_;
+        LOG(LIB_INFO) << "New points:" << ElList_.size();
+        for (long i = totalElementsStored_; i < ElList_.size(); i++) {
+            add(&space_, ElList_[i]);
+        }
+
+        char * old_level0_memory = data_level0_memory_;
+        size_t total_memory_allocated = (memoryPerObject_ * ElList_.size());
+        data_level0_memory_ = (char *)malloc(memoryPerObject_ * ElList_.size());
+
+        memset(data_level0_memory_, 1, memoryPerObject_ * ElList_.size());
+
+        for (size_t i = 0; i < totalElementsStored_; i++) {
+            ElList_[i]->copyDataAndLevel0LinksToOptIndex(
+                data_level0_memory_ + i * memoryPerObject_, offsetLevel0_, offsetData_);
+            delete data_rearranged_[i];
+            data_rearranged_[i] = new Object(data_level0_memory_ + i*memoryPerObject_ + offsetData_);
+            ElList_[i]->data_ = data_rearranged_[i];
+        }
+
+        for (size_t i = totalElementsStored_; i < ElList_.size(); i++) {
+            ElList_[i]->copyDataAndLevel0LinksToOptIndex(
+                data_level0_memory_ + i * memoryPerObject_, offsetLevel0_, offsetData_);
+            data_rearranged_.push_back(new Object(data_level0_memory_ + i*memoryPerObject_ + offsetData_));
+            ElList_[i]->data_ = data_rearranged_[i];
+        };
+        if (old_level0_memory) free(old_level0_memory);
+
+        if (iscosine_) {
+            for (size_t i = 0; i < ElList_.size(); i++) {
+                float *v = (float *)(data_level0_memory_ + i * memoryPerObject_ + offsetData_ + 16);
+                float sum = 0;
+                for (int j = 0; j < vectorlength_; j++) {
+                    sum += v[j] * v[j];
+                }
+                if (sum != 0.0) {
+                    sum = 1 / sqrt(sum);
+                    for (int j = 0; j < vectorlength_; j++) {
+                        v[j] *= sum;
+                    }
+                }
+            };
+        }
+
+        if (linkLists_) {
+            for (long i = 0; i < totalElementsStored_; i++) if (linkLists_[i]) free(linkLists_[i]);
+            free(linkLists_);
+        }
+        linkLists_ = (char **)malloc(sizeof(void *) * ElList_.size());
+        for (long i = 0; i < ElList_.size(); i++) {
+            if (ElList_[i]->level < 1) {
+                linkLists_[i] = nullptr;
+                continue;
+            }
+            // TODO Can this one overflow? I really doubt
+            SIZEMASS_TYPE sizemass = ((ElList_[i]->level) * (maxM_ + 1)) * sizeof(int);
+            total_memory_allocated += sizemass;
+            char *linkList = (char *)malloc(sizemass);
+            linkLists_[i] = linkList;
+            ElList_[i]->copyHigherLevelLinksToOptIndex(linkList, 0);
+        };
+        totalElementsStored_ = ElList_.size();
+        enterpointId_ = enterpoint_->getId();
+        LOG(LIB_INFO) << "Finished making optimized index";
+        LOG(LIB_INFO) << "Total elements stored = " << totalElementsStored_;
+        LOG(LIB_INFO) << "Maximum level = " << enterpoint_->level;
+        LOG(LIB_INFO) << "Total memory allocated for optimized index+data: " << (total_memory_allocated >> 20) << " Mb";
+    }
+
     template <typename dist_t>
     void
     Hnsw<dist_t>::Search(RangeQuery<dist_t> *query, IdType) const
@@ -709,7 +805,6 @@ namespace similarity {
         std::ofstream output(location, std::ios::binary);
         CHECK_MSG(output, "Cannot open file '" + location + "' for writing");
         streampos position;
-        totalElementsStored_ = ElList_.size();
 
         writeBinaryPOD(output, totalElementsStored_);
         writeBinaryPOD(output, memoryPerObject_);
@@ -761,7 +856,26 @@ namespace similarity {
         readBinaryPOD(input, maxM0_);
         readBinaryPOD(input, dist_func_type_);
         readBinaryPOD(input, searchMethod_);
+        mult_ = 1 / log(1.0 * maxM_);
+	M_ = maxM_;
+        indexThreadQty_ = std::thread::hardware_concurrency();
+        efConstruction_ = 400;
+        ef_ = 400;
+        delaunay_type_ = 2;
+        searchAlgoType_ = kHybrid;
+        generator.reset(new std::default_random_engine(100));
+        
+        LOG(LIB_INFO) << "enterpointId        = " << enterpointId_;
+        LOG(LIB_INFO) << "maxlevel            = " << maxlevel_;
+        
+        LOG(LIB_INFO) << "M                   = " << M_;
+        LOG(LIB_INFO) << "indexThreadQty      = " << indexThreadQty_;
+        LOG(LIB_INFO) << "efConstruction      = " << efConstruction_;
+        LOG(LIB_INFO) << "maxM                = " << maxM_;
+        LOG(LIB_INFO) << "maxM0               = " << maxM0_;
 
+        LOG(LIB_INFO) << "mult                = " << mult_;
+        LOG(LIB_INFO) << "delaunay_type       = " << delaunay_type_;
         LOG(LIB_INFO) << "searchMethod: " << searchMethod_;
 
         if (dist_func_type_ == 1)
@@ -771,15 +885,15 @@ namespace similarity {
         else if (dist_func_type_ == 3)
             fstdistfunc_ = NormScalarProductSIMD;
 
-        //        LOG(LIB_INFO) << input.tellg();
         LOG(LIB_INFO) << "Total: " << totalElementsStored_ << ", Memory per object: " << memoryPerObject_;
         size_t data_plus_links0_size = memoryPerObject_ * totalElementsStored_;
         data_level0_memory_ = (char *)malloc(data_plus_links0_size);
         input.read(data_level0_memory_, data_plus_links0_size);
         linkLists_ = (char **)malloc(sizeof(void *) * totalElementsStored_);
 
+        int dataSectionSize = 1;
         data_rearranged_.resize(totalElementsStored_);
-
+        ElList_.resize(totalElementsStored_);
         for (size_t i = 0; i < totalElementsStored_; i++) {
             SIZEMASS_TYPE linkListSize;
             readBinaryPOD(input, linkListSize);
@@ -791,7 +905,46 @@ namespace similarity {
                 input.read(linkLists_[i], linkListSize);
             }
             data_rearranged_[i] = new Object(data_level0_memory_ + (i)*memoryPerObject_ + offsetData_);
+            HnswNode *node = new HnswNode(data_rearranged_[i], i);
+            int level = linkListSize / sizeof(int) / (maxM_ + 1);
+            node->init(level, maxM_, maxM0_);
+            ElList_[i] = node;
+            if (data_rearranged_[i]->bufferlength() > dataSectionSize) dataSectionSize = data_rearranged_[i]->bufferlength();
+            getRandomLevel(mult_);
         }
+
+        int *neighbors;
+        int friendsize;
+        for (size_t i = 0; i < totalElementsStored_; i++) {
+            HnswNode *node = ElList_[i];
+            neighbors = (int *)(data_level0_memory_ + i*memoryPerObject_ + offsetLevel0_);
+            friendsize = *neighbors;
+            for (int j = 0; j < friendsize; j++) {
+                node->allFriends[0].push_back(ElList_[*(neighbors+j+1)]);
+            }
+            for (int j = 1; j <= node->level; j++) {
+	        neighbors = (int *)(linkLists_[i] + (maxM_ + 1)*(j - 1)*sizeof(int));
+                friendsize = *neighbors;
+                for (int k = 0; k < friendsize; k++) {
+                    node->allFriends[j].push_back(ElList_[*(neighbors+k+1)]);
+                }
+            }
+        }
+
+        // Selecting custom made functions
+        if (space_.StrDesc().compare("SpaceLp: p = 2 do we have a special implementation for this p? : 1") == 0 && sizeof(dist_t) == 4) {
+            LOG(LIB_INFO) << "The space is Euclidean";
+            vectorlength_ = ((dataSectionSize - 16) >> 2);
+            LOG(LIB_INFO) << "Vector length=" << vectorlength_;
+            iscosine_ = false;
+        } else if (space_.StrDesc().compare("CosineSimilarity") == 0 && sizeof(dist_t) == 4) {
+            LOG(LIB_INFO) << "The vectorspace is Cosine Similarity";
+            vectorlength_ = ((dataSectionSize - 16) >> 2);
+            LOG(LIB_INFO) << "Vector length=" << vectorlength_;
+            iscosine_ = true;
+        }
+
+	enterpoint_ = ElList_[enterpointId_];
         LOG(LIB_INFO) << "Finished loading index";
         visitedlistpool = new VisitedListPool(1, totalElementsStored_);
 

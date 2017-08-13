@@ -113,6 +113,13 @@ bool VectorSpace<dist_t>::ReadNextObjStr(DataFileInputState &inpStateBase, strin
   CHECK_MSG(pInpState != NULL, "Bug: unexpected pointer type");
   if (!pInpState->inp_file_) return false;
   if (!getline(pInpState->inp_file_, strObj)) return false;
+  if (strObj.substr(0, 3) == "id:") {
+      int p = 3;
+      while (p < strObj.size() && !isspace(strObj[p])) p++;
+      externId = strObj.substr(3, p-3);
+      while (p < strObj.size() && isspace(strObj[p])) p++;
+      strObj = strObj.substr(p);
+  }
   pInpState->line_num_++;
   return true;
 }
