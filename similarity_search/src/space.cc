@@ -32,7 +32,7 @@ unique_ptr<DataFileInputState> Space<dist_t>::ReadDataset(ObjectVector& dataset,
   string line;
   LabelType label;
   string externId;
-  for (size_t id = 0; id < MaxNumObjects || !MaxNumObjects; ++id) {
+  for (size_t id = vExternIds.size(); id < MaxNumObjects || !MaxNumObjects; ++id) {
     if (!ReadNextObjStr(*inpState, line, label, externId)) break;
     dataset.push_back(CreateObjFromStr(id, label, line, inpState.get()).release());
     vExternIds.push_back(externId);

@@ -681,7 +681,7 @@ namespace similarity {
  
         LOG(LIB_INFO) << "Original points:" << totalElementsStored_;
         LOG(LIB_INFO) << "New points:" << ElList_.size();
-        for (long i = totalElementsStored_; i < ElList_.size(); i++) {
+        for (size_t i = totalElementsStored_; i < ElList_.size(); i++) {
             add(&space_, ElList_[i]);
         }
 
